@@ -37,16 +37,49 @@ fn redis_err(e: redis::RedisError) -> AppError {
 }
 
 /// Commands a read-only Redis connection refuses (Redis has no server-side read-only mode).
-pub const WRITES: &[&str] = &[
-    "SET", "SETEX", "PSETEX", "SETNX", "MSET", "MSETNX", "GETSET", "GETDEL", "GETEX", "APPEND", "INCR", "INCRBY",
-    "INCRBYFLOAT", "DECR", "DECRBY", "DEL", "UNLINK", "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "RENAME",
-    "RENAMENX", "MOVE", "COPY", "RESTORE", "HSET", "HSETNX", "HMSET", "HDEL", "HINCRBY", "HINCRBYFLOAT", "LPUSH", "RPUSH",
-    "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LSET", "LREM", "LTRIM", "LINSERT", "LMOVE", "RPOPLPUSH", "BLPOP", "BRPOP",
-    "SADD", "SREM", "SPOP", "SMOVE", "SINTERSTORE", "SUNIONSTORE", "SDIFFSTORE", "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN",
-    "ZPOPMAX", "ZREMRANGEBYRANK", "ZREMRANGEBYSCORE", "ZREMRANGEBYLEX", "ZUNIONSTORE", "ZINTERSTORE", "XADD", "XDEL",
-    "XTRIM", "PFADD", "PFMERGE", "SETRANGE", "SETBIT", "BITOP", "GEOADD", "FLUSHDB", "FLUSHALL", "SWAPDB", "EVAL",
-    "EVALSHA", "FCALL", "SCRIPT", "FUNCTION", "CONFIG", "SHUTDOWN", "DEBUG", "MIGRATE", "PUBLISH", "SAVE", "BGSAVE",
+/// Commands that only read, for read-only connections and exports. An allow-list: a command
+/// that isn't here (a new one, a module's, a write) is refused rather than guessed at.
+const READS: &[&str] = &[
+    "GET", "MGET", "STRLEN", "GETRANGE", "SUBSTR", "LCS", "EXISTS", "TYPE", "TTL", "PTTL", "EXPIRETIME", "PEXPIRETIME",
+    "KEYS", "SCAN", "RANDOMKEY", "DBSIZE", "DUMP", "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS",
+    "HSTRLEN", "HSCAN", "HRANDFIELD", "HTTL", "HPTTL", "HEXPIRETIME", "HPEXPIRETIME", "LRANGE", "LLEN", "LINDEX", "LPOS",
+    "SMEMBERS", "SISMEMBER", "SMISMEMBER", "SCARD", "SRANDMEMBER", "SSCAN", "SINTER", "SUNION", "SDIFF", "SINTERCARD",
+    "ZRANGE", "ZRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGE", "ZREVRANGEBYSCORE", "ZREVRANGEBYLEX", "ZSCORE", "ZMSCORE",
+    "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZRANK", "ZREVRANK", "ZSCAN", "ZRANDMEMBER", "ZDIFF", "ZINTER", "ZUNION", "ZINTERCARD",
+    "XRANGE", "XREVRANGE", "XLEN", "XREAD", "XPENDING", "PFCOUNT", "GETBIT", "BITCOUNT", "BITPOS", "BITFIELD_RO",
+    "GEOPOS", "GEODIST", "GEOHASH", "GEOSEARCH", "GEORADIUS_RO", "GEORADIUSBYMEMBER_RO", "SORT_RO", "EVAL_RO",
+    "EVALSHA_RO", "FCALL_RO", "PING", "ECHO", "TIME", "INFO", "SELECT", "LASTSAVE", "ROLE", "LOLWUT", "JSON.GET",
+    "JSON.MGET", "JSON.TYPE", "JSON.STRLEN", "JSON.ARRLEN", "JSON.ARRINDEX", "JSON.OBJKEYS", "JSON.OBJLEN", "JSON.RESP",
 ];
+/// Commands with read and write forms: only these subcommands read.
+const READ_SUBCOMMANDS: &[(&str, &[&str])] = &[
+    ("CONFIG", &["GET"]),
+    ("CLIENT", &["LIST", "INFO", "GETNAME", "ID"]),
+    ("OBJECT", &["ENCODING", "FREQ", "IDLETIME", "REFCOUNT", "HELP"]),
+    ("MEMORY", &["USAGE", "STATS", "DOCTOR", "HELP"]),
+    ("SLOWLOG", &["GET", "LEN", "HELP"]),
+    ("XINFO", &["STREAM", "GROUPS", "CONSUMERS", "HELP"]),
+    ("COMMAND", &["COUNT", "INFO", "DOCS", "LIST", "GETKEYS", "HELP"]),
+    ("SCRIPT", &["EXISTS"]),
+    ("FUNCTION", &["LIST", "STATS", "DUMP"]),
+    ("ACL", &["WHOAMI", "LIST", "USERS", "CAT", "GETUSER"]),
+    ("CLUSTER", &["INFO", "NODES", "SLOTS", "SHARDS", "MYID", "KEYSLOT", "COUNTKEYSINSLOT"]),
+    ("LATENCY", &["LATEST", "HISTORY", "DOCTOR", "GRAPH", "HELP"]),
+];
+
+/// Whether a command (its words, name first) only reads.
+pub fn reads(words: &[String]) -> bool {
+    let Some(name) = words.first().map(|w| w.to_ascii_uppercase()) else { return true };
+    if READS.contains(&name.as_str()) {
+        return true;
+    }
+    // SORT and GEORADIUS read unless told to STORE the result.
+    if ["SORT", "GEORADIUS", "GEORADIUSBYMEMBER"].contains(&name.as_str()) {
+        return !words.iter().skip(1).any(|w| w.eq_ignore_ascii_case("STORE") || w.eq_ignore_ascii_case("STOREDIST"));
+    }
+    let sub = words.get(1).map(|w| w.to_ascii_uppercase()).unwrap_or_default();
+    READ_SUBCOMMANDS.iter().any(|(n, subs)| *n == name && subs.contains(&sub.as_str()))
+}
 
 impl RedisSession {
     pub async fn connect(config: &ConnectionConfig, password: Option<Zeroizing<String>>, tunnel: Option<Tunnel>) -> Result<Self> {
@@ -64,8 +97,14 @@ impl RedisSession {
             settings = settings.set_password(p.as_str());
         }
         let plain = ConnectionAddr::Tcp(host.clone(), port);
-        // Through a tunnel the certificate can't match 127.0.0.1.
-        let tls = ConnectionAddr::TcpTls { host, port, insecure: config.ssl_mode != SslMode::VerifyFull || tunnel.is_some(), tls_params: None };
+        // The Redis client checks a certificate against the address it connects to, which through a
+        // tunnel is 127.0.0.1: rather than silently skip the check, verify-full refuses.
+        if tunnel.is_some() && config.ssl_mode == SslMode::VerifyFull {
+            return Err(AppError::Invalid(
+                "Verify-full can't check Redis's certificate through an SSH tunnel. Choose “Require” to encrypt without checking it, or connect without the tunnel.".into(),
+            ));
+        }
+        let tls = ConnectionAddr::TcpTls { host, port, insecure: config.ssl_mode != SslMode::VerifyFull, tls_params: None };
         let (client, mut conn) = match config.ssl_mode {
             SslMode::Disable => open(plain, &settings, CONNECT_TIMEOUT).await,
             // Redis has no in-protocol TLS upgrade: try TLS briefly, then plain (a plain server
@@ -150,8 +189,8 @@ impl RedisSession {
             for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//")) {
                 let words = split_command(line.trim_end_matches(';'))?;
                 let Some(name) = words.first().map(|w| w.to_ascii_uppercase()) else { continue };
-                if self.read_only && WRITES.contains(&name.as_str()) {
-                    return Err(AppError::Invalid(format!("{name} changes data, and this connection is read-only")));
+                if self.read_only && !reads(&words) {
+                    return Err(AppError::Invalid(format!("{name} isn't a read command, and this connection is read-only")));
                 }
                 let mut cmd = redis::cmd(&words[0]);
                 for w in &words[1..] {

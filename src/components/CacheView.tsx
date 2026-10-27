@@ -13,10 +13,11 @@ import type { QueryTab } from "../store/tabs";
 import { Select } from "./Select";
 import { Button, IconButton } from "./ui";
 import { Badge, ErrorNote, Labeled, Page, SqlArea, Step, Text } from "./workbench";
+import { vaultStorage } from "../lib/vaultStorage";
 
-/** Mappings are configuration (no data): kept per device. */
+/** Mappings hold SQL: kept in the encrypted vault, per device. */
 const useMappings = create<{ mappings: (CacheMapping & { redisId: string; redisDb: string })[]; save(m: CacheMapping & { redisId: string; redisDb: string }): void }>()(
-  persist((set) => ({ mappings: [], save: (m) => set((s) => ({ mappings: [...s.mappings.filter((x) => x.name !== m.name), m] })) }), { name: "onyx.cache-mappings" }),
+  persist((set) => ({ mappings: [], save: (m) => set((s) => ({ mappings: [...s.mappings.filter((x) => x.name !== m.name), m] })) }), { name: "onyx.cache-mappings", storage: vaultStorage }),
 );
 
 const BLANK: CacheMapping = { name: "user", sql: "SELECT * FROM users WHERE id = :id", keyTemplate: "user:{id}", format: "json", fields: [{ column: "email", field: "email", compare: "text" }], versionColumn: "", versionField: "", windowMs: 3000 };

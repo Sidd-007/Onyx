@@ -1,5 +1,7 @@
-//! Natural language → SQL with the Claude API. Only the schema (table, column and type
-//! names, foreign keys) is sent, never rows. The API key lives in Onyx's vault.
+//! Natural language → SQL with the Claude API. Sent: the request, the schema (table, column
+//! and type names, foreign keys) and, when there is one, SQL to refine: Claude's previous
+//! answer, or the editor's SQL when the user includes it (it can contain values). Never rows.
+//! The API key lives in Onyx's vault.
 
 use std::time::Duration;
 

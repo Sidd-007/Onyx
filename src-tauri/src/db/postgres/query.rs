@@ -19,6 +19,11 @@ impl PgSession {
         let mut run = Run::with_limit(events, limit);
         let outcome: Result<()> = async {
             let editor = self.editor(tab).await?;
+            if self.read_only {
+                // Back to read-only before every run, whatever an earlier run did to the session's
+                // defaults (best effort: inside a failed transaction, ROLLBACK must still get through).
+                let _ = editor.client.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY").await;
+            }
             let stream = editor.client.simple_query_raw(sql).await?;
             pin_mut!(stream);
             while let Some(message) = stream.next().await {
@@ -254,6 +259,41 @@ mod tests {
         let log = log.lock().unwrap();
         let error = events(&log).into_iter().find(|e| e["type"] == "error").unwrap().clone();
         assert_eq!(error["error"]["code"], "25006", "read_only_sql_transaction");
+    }
+
+    /// `ONYX_TEST_PG=1 cargo test read_only`: a run that switches the session's default back to
+    /// read-write (here through set_config, as a function could) doesn't carry over: the next
+    /// run is read-only again, so a function that writes still can't. Exports run read-only too.
+    #[tokio::test]
+    async fn read_only_survives_a_flipped_default_and_exports_never_write() {
+        let Some(config) = dev_config() else { return };
+        let rw = crate::db::Session::connect(&config, None, None).await.unwrap();
+        let schema = format!("onyx_ro_{}", uuid::Uuid::new_v4().simple());
+        rw.execute_meta(&format!(
+            "CREATE SCHEMA {schema}; CREATE TABLE {schema}.t (i int);
+             CREATE FUNCTION {schema}.w() RETURNS int LANGUAGE sql AS $$ INSERT INTO {schema}.t VALUES (1) RETURNING i $$;"
+        ))
+        .await
+        .unwrap();
+        let count = || {
+            let (rw, schema) = (&rw, schema.clone());
+            async move { crate::journal::collect(rw, &format!("SELECT count(*) FROM {schema}.t"), None, None).await.unwrap().1[0][0].clone() }
+        };
+
+        let ro = PgSession::connect(&ConnectionConfig { read_only: true, ..config }, None, None).await.unwrap();
+        let (channel, _) = recorder();
+        ro.run_limited("SELECT set_config('default_transaction_read_only', 'off', false)", &channel, None, Some("t")).await.unwrap();
+        let (channel, log) = recorder();
+        ro.run_limited(&format!("SELECT {schema}.w()"), &channel, None, Some("t")).await.unwrap();
+        assert!(event_types(&log.lock().unwrap()).contains(&"error".to_owned()), "the write went through");
+        assert_eq!(count().await.as_deref(), Some("0"));
+
+        // An export (or copy) of a SELECT that calls a writing function writes nothing.
+        let (channel, log) = recorder();
+        rw.run_read_only(&format!("SELECT {schema}.w()"), &channel).await.unwrap();
+        assert!(event_types(&log.lock().unwrap()).contains(&"error".to_owned()));
+        assert_eq!(count().await.as_deref(), Some("0"));
+        rw.execute_meta(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
     }
 
     #[tokio::test]

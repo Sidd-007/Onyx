@@ -206,8 +206,14 @@ pub async fn dump(
 }
 
 /// Restores a dump file into the connection's database.
+/// Restores a dump. Postgres custom-format archives go through pg_restore (it runs no shell
+/// commands); plain SQL for Postgres and MySQL runs through Onyx's own statement runner, never
+/// psql or the mysql client, whose `\\!` / `system` commands a crafted file could use to run
+/// programs. SQLite files go through sqlite3 in safe mode (no `.shell`, `.system`, `.load`).
+#[allow(clippy::too_many_arguments)]
 pub async fn restore(
     config: &ConnectionConfig,
+    session: &crate::db::Session,
     at: Endpoint,
     password: Option<Zeroizing<String>>,
     schema: Option<String>,
@@ -220,31 +226,31 @@ pub async fn restore(
         use std::io::Read;
         std::fs::File::open(path)?.read(&mut head).ok() == Some(5) && &head == b"PGDMP"
     };
+    let report = |done: crate::sqlfile::FileRun| {
+        if !done.skipped.is_empty() {
+            log(events, serde_json::json!({ "type": "log", "line": format!("Skipped {} client command(s) in the file; they were not run", done.skipped.len()) }));
+        }
+    };
     match config.engine {
-        Engine::Postgres => {
-            let mut cmd = Command::new(tool(if custom { "pg_restore" } else { "psql" })?);
+        Engine::Postgres if custom => {
+            let mut cmd = Command::new(tool("pg_restore")?);
             let _ca = pg_env(&mut cmd, config, &at, password)?;
-            if custom {
-                cmd.args(["--no-password", "--no-owner", "--verbose", "--exit-on-error", "--dbname", &config.database]).arg(path);
-            } else {
-                cmd.args(["--no-password", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--file"]).arg(path);
-            }
+            cmd.args(["--no-password", "--no-owner", "--verbose", "--exit-on-error", "--dbname", &config.database]).arg(path);
             run_tool(cmd, None, events).await
         }
+        Engine::Postgres => {
+            report(crate::sqlfile::restore_file(session, path, None, true, events).await?);
+            Ok(())
+        }
         Engine::Mysql => {
-            let (options, _ca) = mysql_options(config, &at, password)?;
-            let mut cmd = Command::new(tool("mysql")?);
-            cmd.arg(format!("--defaults-extra-file={}", options.0.display())).arg("--verbose");
             let database = schema.unwrap_or_else(|| config.database.clone());
-            if !database.is_empty() {
-                cmd.arg(database);
-            }
-            cmd.stdin(std::fs::File::open(path)?);
-            run_tool(cmd, None, events).await
+            let setup = (!database.is_empty()).then(|| format!("USE {}", crate::dialect::ident(Engine::Mysql, &database)));
+            report(crate::sqlfile::restore_file(session, path, setup, false, events).await?);
+            Ok(())
         }
         Engine::Sqlite => {
             let mut cmd = Command::new(tool("sqlite3")?);
-            cmd.arg("-bail").arg(crate::db::sqlite::expand_path(&config.database)).stdin(std::fs::File::open(path)?);
+            cmd.arg("-safe").arg("-bail").arg(crate::db::sqlite::expand_path(&config.database)).stdin(std::fs::File::open(path)?);
             run_tool(cmd, None, events).await
         }
         Engine::Duckdb => Err(AppError::Invalid("For DuckDB, run IMPORT DATABASE 'folder' in a query tab".into())),
@@ -283,13 +289,23 @@ mod tests {
         assert!(result.bytes > 0);
         assert!(std::fs::read_to_string(&out).unwrap().contains("INSERT INTO t VALUES(2)"));
 
+        // (SQLite restores go through sqlite3; the session isn't used for them.)
+        let session = crate::db::Session::connect(&config, None, None).await.unwrap();
         let copy = dir.join(format!("onyx-restore-{}.db", uuid::Uuid::new_v4()));
         config.database = copy.display().to_string();
         let at = Endpoint { host: String::new(), port: 0, tunnelled: false };
-        restore(&config, at, None, None, &out, &events).await.unwrap();
+        restore(&config, &session, at, None, None, &out, &events).await.unwrap();
         let n: i64 = rusqlite::Connection::open(&copy).unwrap().query_row("SELECT count(*) FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
-        for p in [db, out, copy] {
+
+        // A crafted dump can't run a program: sqlite3 runs in safe mode, so .shell is refused.
+        let marker = dir.join(format!("onyx-marker-{}", uuid::Uuid::new_v4()));
+        let evil = dir.join(format!("onyx-evil-{}.sql", uuid::Uuid::new_v4()));
+        std::fs::write(&evil, format!("CREATE TABLE z (x INTEGER);\n.shell touch {}\n", marker.display())).unwrap();
+        let at = Endpoint { host: String::new(), port: 0, tunnelled: false };
+        assert!(restore(&config, &session, at, None, None, &evil, &events).await.is_err());
+        assert!(!marker.exists(), ".shell ran");
+        for p in [db, out, copy, evil] {
             std::fs::remove_file(p).unwrap();
         }
     }
@@ -310,5 +326,33 @@ mod tests {
         let text = std::fs::read_to_string(&out).unwrap();
         assert!(text.contains("CREATE TABLE shop.orders"), "{} bytes", result.bytes);
         std::fs::remove_file(out).unwrap();
+    }
+
+    /// `ONYX_TEST_PG=1 cargo test restore`: a plain dump with psql shell commands restores its
+    /// SQL, and the commands are skipped, never run.
+    #[tokio::test]
+    async fn plain_postgres_restores_never_run_shell_commands() {
+        let Some(config) = crate::db::edit_integration::config(Engine::Postgres) else { return };
+        let session = crate::db::Session::connect(&config, None, None).await.unwrap();
+        let dir = std::env::temp_dir();
+        let schema = format!("onyx_restore_{}", uuid::Uuid::new_v4().simple());
+        let marker = dir.join(format!("onyx-marker-{}", uuid::Uuid::new_v4()));
+        let file = dir.join(format!("onyx-evil-{}.sql", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &file,
+            format!(
+                "CREATE SCHEMA {schema};\nCREATE TABLE {schema}.t (i int);\n\\! touch {m}\n\\copy {schema}.t from program 'touch {m}'\nINSERT INTO {schema}.t VALUES (1);\n",
+                m = marker.display()
+            ),
+        )
+        .unwrap();
+        let (events, _) = recorder();
+        let at = Endpoint { host: String::new(), port: 0, tunnelled: false };
+        restore(&config, &session, at, None, None, &file, &events).await.unwrap();
+        assert!(!marker.exists(), "a shell command in the dump ran");
+        let (_, rows) = crate::journal::collect(&session, &format!("SELECT count(*) FROM {schema}.t"), None, None).await.unwrap();
+        assert_eq!(rows[0][0].as_deref(), Some("1"));
+        session.execute_meta(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
+        std::fs::remove_file(&file).unwrap();
     }
 }

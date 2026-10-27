@@ -78,7 +78,7 @@ Drop a `.db`, `.sqlite`, `.duckdb`, CSV, Parquet or JSON file on the window and 
 - **Transactions**: open one in a tab and commit or roll back explicitly. The tab keeps its own session.
 - **Split editor** (⌘\\): two tabs side by side with a resizable divider.
 - **Command palette** (⌘K): every action, file, table, theme and saved query.
-- **Natural-language SQL** (⇧⌘I): describe what you want and get SQL from the Claude API. Only the schema is sent (names, types, foreign keys), never rows. It's opt-in per connection and always off for prod. You can Insert, Replace, Run, or **Run & chart**.
+- **Natural-language SQL** (⇧⌘I): describe what you want and get SQL from the Claude API. Sent: your request, the schema (names, types, foreign keys), Claude's previous answer in the chat, and the editor's SQL only if you include it. Never rows. It's opt-in per connection and always off for prod. You can Insert, Replace, Run, or **Run & chart**.
 - **EXPLAIN view**: a visual plan tree with costs, rows and time per node. EXPLAIN ANALYZE asks first because it runs the query.
 - **History** (searchable, with timings), **saved queries** (⌘S), and a timing history per saved query.
 - **Run a big .sql file in the background**: streams statements of any size with progress. It understands dumps (Postgres `COPY … FROM stdin`, dollar quoting, MySQL `DELIMITER`).

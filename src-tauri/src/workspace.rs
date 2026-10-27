@@ -120,14 +120,24 @@ pub fn read(root: &Path, relative: &str) -> Result<String> {
     String::from_utf8(std::fs::read(&path)?).map_err(|_| AppError::Invalid("That file isn't text".into()))
 }
 
-/// Writes through a temporary file, so a crash never leaves half a file.
+/// Writes through a temporary file, so a crash never leaves half a file. The temporary file
+/// has a random name and is created exclusively (`O_EXCL`, which also refuses a symlink): a
+/// planted file or symlink can't redirect the write outside the folder.
 pub fn write(root: &Path, relative: &str, content: &str) -> Result<()> {
+    use std::io::Write;
     let path = resolve(root, relative)?;
     let name = path.file_name().ok_or_else(|| AppError::Invalid("Not a file".into()))?.to_string_lossy();
-    let temp = path.with_file_name(format!(".{name}.onyx-tmp"));
-    std::fs::write(&temp, content)?;
-    std::fs::rename(&temp, &path)?;
-    Ok(())
+    let temp = path.with_file_name(format!(".{name}.{}.onyx-tmp", uuid::Uuid::new_v4().simple()));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, &path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    Ok(written?)
 }
 
 /// A new empty file or folder; never replaces one that exists.
@@ -255,6 +265,25 @@ mod tests {
         std::os::unix::fs::symlink("/etc", root.join("link")).unwrap();
         assert!(resolve(&root, "link/passwd").is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn planted_symlinks_cannot_redirect_a_save() {
+        let root = folder();
+        let outside = std::env::temp_dir().join(format!("onyx-outside-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&outside, "keep me").unwrap();
+        std::fs::write(root.join("daily.sql"), "SELECT 1;").unwrap();
+        // The old fixed temp name, pointed outside the folder.
+        std::os::unix::fs::symlink(&outside, root.join(".daily.sql.onyx-tmp")).unwrap();
+        write(&root, "daily.sql", "SELECT 2;").unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me");
+        assert_eq!(std::fs::read_to_string(root.join("daily.sql")).unwrap(), "SELECT 2;");
+        // A save through a symlinked file that points outside is refused.
+        std::os::unix::fs::symlink(&outside, root.join("link.sql")).unwrap();
+        assert!(write(&root, "link.sql", "x").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me");
+        std::fs::remove_file(&outside).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

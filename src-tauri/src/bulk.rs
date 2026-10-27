@@ -249,7 +249,7 @@ pub async fn copy(
         Ok(total)
     };
     let produce = async {
-        let summary = source.run(sql, &channel).await;
+        let summary = source.run_read_only(sql, &channel).await;
         drop(channel); // closes the stream of rows
         summary
     };

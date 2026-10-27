@@ -58,6 +58,14 @@ const SCHEMA: &str = "
         updated_at INTEGER NOT NULL,
         body       TEXT NOT NULL
     );
+
+    -- The UI's saved state that holds SQL or results: open tabs (their SQL and filters),
+    -- alerts (with their last values), saved tool setups. Encrypted here, never in WebKit's
+    -- plain-text localStorage.
+    CREATE TABLE IF NOT EXISTS ui_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
 ";
 
 /// History keeps this many entries; older ones are dropped.
@@ -379,6 +387,22 @@ impl AppDb {
             .optional()
             .map_err(db_err)?;
         Ok(value.map(Zeroizing::new))
+    }
+
+    pub fn ui_state(&self, key: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT value FROM ui_state WHERE key = ?1", [key], |r| r.get(0)).optional().map_err(db_err)
+    }
+
+    pub fn set_ui_state(&self, key: &str, value: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        match value {
+            Some(v) => conn.execute("INSERT INTO ui_state (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = ?2", params![key, v]),
+            None => conn.execute("DELETE FROM ui_state WHERE key = ?1", [key]),
+        }
+        .map_err(db_err)?;
+        Ok(())
     }
 
     pub fn set_secret(&self, account: &str, value: &str) -> Result<()> {

@@ -13,6 +13,7 @@ import type { QueryTab } from "../store/tabs";
 import { useUi } from "../store/ui";
 import { Button, IconButton } from "./ui";
 import { Badge, ErrorNote, Labeled, Page, RowsPreview, SqlArea, Step, Text } from "./workbench";
+import { vaultStorage } from "../lib/vaultStorage";
 
 interface Recipe {
   name: string;
@@ -22,7 +23,7 @@ interface Recipe {
   templates: { name: string; sql: string }[];
 }
 
-const useRecipes = create<{ recipes: Recipe[]; save(r: Recipe): void }>()(persist((set) => ({ recipes: [], save: (r) => set((s) => ({ recipes: [...s.recipes.filter((x) => x.name !== r.name), r] })) }), { name: "onyx.tenant-recipes" }));
+const useRecipes = create<{ recipes: Recipe[]; save(r: Recipe): void }>()(persist((set) => ({ recipes: [], save: (r) => set((s) => ({ recipes: [...s.recipes.filter((x) => x.name !== r.name), r] })) }), { name: "onyx.tenant-recipes", storage: vaultStorage }));
 
 /**
  * F10: one tenant's data, consistently scoped. Tables with the tenant column are browsed with

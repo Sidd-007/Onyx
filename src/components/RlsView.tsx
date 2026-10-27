@@ -12,6 +12,7 @@ import { useUi } from "../store/ui";
 import { Select } from "./Select";
 import { Button, IconButton } from "./ui";
 import { Badge, ErrorNote, Labeled, Page, RowsPreview, SqlArea, Step, Text } from "./workbench";
+import { vaultStorage } from "../lib/vaultStorage";
 
 interface Case {
   id: string;
@@ -23,7 +24,7 @@ interface Case {
 }
 
 /** Saved test cases: no credentials, no tokens, just a role name and claims. */
-const useCases = create<{ cases: Case[]; set(cases: Case[]): void }>()(persist((set) => ({ cases: [], set: (cases) => set({ cases }) }), { name: "onyx.rls-cases" }));
+const useCases = create<{ cases: Case[]; set(cases: Case[]): void }>()(persist((set) => ({ cases: [], set: (cases) => set({ cases }) }), { name: "onyx.rls-cases", storage: vaultStorage }));
 
 const EXPECT_LABEL: Record<Expectation["kind"], string> = { allow: "sees at least N rows", exact: "sees exactly N rows", "deny-rows": "sees no rows", "deny-privilege": "has no SELECT grant" };
 

@@ -463,6 +463,8 @@ export const api = {
 
   setApiKey: (key: string) => invoke<void>("set_api_key", { key }),
   hasApiKey: () => invoke<boolean>("has_api_key"),
+  uiStateGet: (key: string) => invoke<string | null>("ui_state_get", { key }),
+  uiStateSet: (key: string, value: string | null) => invoke<void>("ui_state_set", { key, value }),
   aiSql: (id: string, prompt: string, currentSql: string | null, defaultSchema: string | null) =>
     invoke<{ sql: string; explanation: string }>("ai_sql", { id, prompt, currentSql, defaultSchema }),
 

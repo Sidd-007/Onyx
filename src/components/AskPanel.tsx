@@ -16,9 +16,10 @@ type Message =
 const SUGGESTIONS = ["Rows added in the last 7 days", "Count rows by status", "The 10 newest rows with their related records"];
 
 /**
- * Ask, as a chat beside the editor: natural language → SQL with Claude. Only the schema is
- * sent, never rows. A follow-up refines the last answer (the first message works from the
- * editor's SQL); nothing runs until you pick an action on an answer.
+ * Ask, as a chat beside the editor: natural language → SQL with Claude. Sent: the request, the
+ * schema (names and types), Claude's previous answer when refining, and the editor's SQL only
+ * when ticked for this chat (it can hold values from the data). Never rows. Nothing runs until
+ * you pick an action on an answer.
  */
 export function AskPanel({
   connectionId,
@@ -38,6 +39,8 @@ export function AskPanel({
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [hasKey, setHasKey] = useState<boolean | null>(null);
+  /** The editor's SQL goes along only when ticked: it can contain values from the data. */
+  const [includeEditor, setIncludeEditor] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
   const thread = useRef<HTMLDivElement>(null);
   const nextId = useRef(1);
@@ -69,7 +72,8 @@ export function AskPanel({
 
   const lastSql = [...messages].reverse().find((m): m is Extract<Message, { role: "assistant" }> => m.role === "assistant" && !!m.sql)?.sql;
   const lastAnswerId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
-  const context = lastSql ? "last answer" : editorSql().trim() ? "editor SQL" : null;
+  const editorText = editorSql().trim();
+  const context = lastSql ? "last answer" : includeEditor && editorText ? "editor SQL" : null;
 
   const send = async (text = prompt) => {
     const request = text.trim();
@@ -78,7 +82,7 @@ export function AskPanel({
     setMessages((m) => [...m, { id: nextId.current++, role: "user", text: request }]);
     setBusy(true);
     try {
-      const answer = await api.aiSql(connectionId, request, lastSql ?? (editorSql().trim() || null), defaultSchema);
+      const answer = await api.aiSql(connectionId, request, lastSql ?? (includeEditor ? editorSql().trim() || null : null), defaultSchema);
       setMessages((m) => [...m, { id: nextId.current++, role: "assistant", ...answer }]);
     } catch (e) {
       setMessages((m) => [...m, { id: nextId.current++, role: "error", text: toError(e).message }]);
@@ -99,7 +103,7 @@ export function AskPanel({
     >
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border pl-4 pr-2">
         <span className="text-[14px] font-semibold tracking-[-0.01em]">Ask</span>
-        <span className="q-label">schema only · never rows</span>
+        <span className="q-label">schema · never rows</span>
         <span className="flex-1" />
         <IconButton title="New chat" disabled={!messages.length || busy} onClick={() => setMessages([])}>
           <RotateCcw className="size-3.5" />
@@ -193,8 +197,15 @@ export function AskPanel({
                 <ArrowUp className="size-3.5" />
               </button>
             </form>
+            {!lastSql && editorText && (
+              <label className="mt-2 flex items-center gap-2 text-[12px] text-muted">
+                <input type="checkbox" checked={includeEditor} onChange={(e) => setIncludeEditor(e.target.checked)} />
+                Include the editor's SQL
+                <span className="text-faint">(it can contain values from your data)</span>
+              </label>
+            )}
             <div className="mt-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.1em] text-faint">
-              <span>{context ? `Context: ${context}` : "No context"}</span>
+              <span>{context ? `Sends: request, schema, ${context}` : "Sends: request, schema"}</span>
               <span className="flex-1" />
               <Kbd>↵</Kbd> send <Kbd>⇧↵</Kbd> new line
             </div>

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { vaultStorage } from "../lib/vaultStorage";
 
 export interface TableRef {
   connectionId: string;
@@ -29,6 +30,6 @@ export const useWorkspace = create<WorkspaceStore>()(
       isPinned: (ref) => get().pinned.some((p) => same(p, ref)),
       touch: (ref) => set((s) => ({ recent: [ref, ...s.recent.filter((r) => !same(r, ref))].slice(0, 12) })),
     }),
-    { name: "onyx.workspace", version: 1 },
+    { name: "onyx.workspace", version: 1, storage: vaultStorage },
   ),
 );

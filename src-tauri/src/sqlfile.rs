@@ -237,6 +237,35 @@ fn snippet(statement: &str) -> String {
     if one_line.chars().count() > 120 { format!("{}…", one_line.chars().take(120).collect::<String>()) } else { one_line }
 }
 
+/// Restores a plain SQL dump on a session of its own, statement by statement. psql and mysql
+/// client commands in the file (`\\! cmd`, `\\copy … program`, `system …`) are never run: they're
+/// skipped and reported, so a crafted dump can't execute anything on this Mac. `setup` runs
+/// first (e.g. `USE db`); with `atomic` (Postgres) everything is one transaction, rolled back
+/// on the first error.
+pub async fn restore_file(session: &Session, path: &Path, setup: Option<String>, atomic: bool, events: &Channel<InvokeResponseBody>) -> Result<FileRun> {
+    let tab = format!("__restore_{}", uuid::Uuid::new_v4().simple());
+    let result = async {
+        if let Some(sql) = &setup {
+            session.execute_script(sql, &tab).await?;
+        }
+        if atomic {
+            session.execute_script("BEGIN", &tab).await?;
+        }
+        let done = run(session, path, true, events, &tab).await;
+        if atomic {
+            let end = if done.is_ok() { "COMMIT" } else { "ROLLBACK" };
+            let ended = session.execute_script(end, &tab).await;
+            if done.is_ok() {
+                ended?;
+            }
+        }
+        done
+    }
+    .await;
+    session.close_tab(&tab).await;
+    result
+}
+
 /// Runs the file on a session of its own (`tab`), closed at the end.
 pub async fn run_file(session: &Session, path: &Path, stop_on_error: bool, events: &Channel<InvokeResponseBody>) -> Result<FileRun> {
     let tab = format!("__sqlfile_{}", uuid::Uuid::new_v4().simple());

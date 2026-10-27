@@ -4,6 +4,7 @@ import { isRead } from "../lib/advisor";
 import { api, toError } from "../lib/ipc";
 import { useConnections } from "./connections";
 import { toast } from "./toasts";
+import { vaultStorage } from "../lib/vaultStorage";
 
 export type AlertCondition = "rows" | "none" | "above" | "below";
 
@@ -85,7 +86,7 @@ export const useAlerts = create<AlertsStore>()(
         }
       },
     }),
-    { name: "onyx.alerts", version: 1 },
+    { name: "onyx.alerts", version: 1, storage: vaultStorage },
   ),
 );
 

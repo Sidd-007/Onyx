@@ -5,6 +5,7 @@ import { isNotebook } from "../lib/notebook";
 import { useTabs } from "./tabs";
 import { toast } from "./toasts";
 import { useUi } from "./ui";
+import { vaultStorage } from "../lib/vaultStorage";
 
 interface IdeStore {
   /** IDE mode: the sidebar gets a file explorer for a folder of .sql files. */
@@ -132,6 +133,7 @@ export const useIde = create<IdeStore>()(
     }),
     {
       name: "onyx.ide",
+      storage: vaultStorage,
       version: 1,
       partialize: (s) => ({ enabled: s.enabled, expanded: s.expanded, fileConnections: s.fileConnections }),
     },

@@ -103,8 +103,9 @@ pub struct ConnectionConfig {
     /// Groups connections on the Connections screen.
     #[serde(default)]
     pub folder: Option<String>,
-    /// Natural-language SQL may send this connection's schema (names and types, never rows)
-    /// to the Claude API. Off by default; never allowed on prod.
+    /// Natural-language SQL may send this connection's schema (names and types, never rows),
+    /// the request, and SQL the user chose to include, to the Claude API. Off by default;
+    /// never allowed on prod.
     #[serde(default)]
     pub ai_enabled: bool,
     /// PEM files: a CA to trust (beyond the system's), and a client certificate and its key.
@@ -131,6 +132,32 @@ pub struct AwsIam {
 }
 
 impl ConnectionConfig {
+    /// A MongoDB address typed with its credentials (`mongodb://ann:secret@host/…`) keeps them
+    /// out of connections.json: the user moves to `user` (unless one is set) and the password
+    /// is returned, for the encrypted vault. The address keeps everything else.
+    pub fn take_url_credentials(&mut self) -> Option<String> {
+        if self.engine != Engine::Mongodb {
+            return None;
+        }
+        let host = self.host.trim().to_owned();
+        let scheme = ["mongodb://", "mongodb+srv://"].into_iter().find(|s| host.starts_with(s))?;
+        let rest = &host[scheme.len()..];
+        // The credentials end at the last '@' before the path or options.
+        let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+        let at = rest[..authority_end].rfind('@')?;
+        let (userinfo, after) = (&rest[..at], &rest[at + 1..]);
+        let (user, password) = match userinfo.split_once(':') {
+            Some((u, p)) => (u, Some(p)),
+            None => (userinfo, None),
+        };
+        let (user, password) = (percent_decode(user), password.map(percent_decode));
+        self.host = format!("{scheme}{after}");
+        if self.user.trim().is_empty() {
+            self.user = user;
+        }
+        password
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(AppError::Invalid("Name is required".into()));
@@ -215,9 +242,46 @@ impl ConnectionStore {
     }
 }
 
+/// `%40` → `@`, as connection addresses encode their credentials.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (bytes.get(i + 1).and_then(|b| hex(*b)), bytes.get(i + 2).and_then(|b| hex(*b)))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mongodb_addresses_never_keep_their_password() {
+        let mut c = ConnectionConfig {
+            engine: Engine::Mongodb,
+            host: "mongodb+srv://ann:p%40ss:w@cluster0.example.net/shop?retryWrites=true".into(),
+            user: String::new(),
+            ..sample("m")
+        };
+        assert_eq!(c.take_url_credentials().as_deref(), Some("p@ss:w"));
+        assert_eq!((c.host.as_str(), c.user.as_str()), ("mongodb+srv://cluster0.example.net/shop?retryWrites=true", "ann"));
+        // No credentials, or another engine: unchanged.
+        assert_eq!(c.take_url_credentials(), None);
+        let mut pg = ConnectionConfig { engine: Engine::Postgres, host: "db:5432".into(), ..sample("p") };
+        assert_eq!(pg.take_url_credentials(), None);
+        assert_eq!(pg.host, "db:5432");
+    }
 
     fn sample(name: &str) -> ConnectionConfig {
         ConnectionConfig {

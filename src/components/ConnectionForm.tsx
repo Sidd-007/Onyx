@@ -544,7 +544,7 @@ export function ConnectionForm({ editingId, prefill }: { editingId: string | nul
               description={
                 config.environment === "prod"
                   ? "Always off for prod connections."
-                  : "Sends table and column names and types (never rows) to the Claude API with your key from Settings."
+                  : "Sends your request and the table and column names and types (never rows) to the Claude API with your key from Settings; the editor's SQL only when you include it."
               }
             >
               <Switch checked={config.environment !== "prod" && !!config.aiEnabled} disabled={config.environment === "prod"} onChange={(aiEnabled) => update({ aiEnabled })} />

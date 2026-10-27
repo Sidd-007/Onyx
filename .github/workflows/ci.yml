@@ -1,17 +1,22 @@
 # Checks every push: types, tests, lint and dependency audits. Integration tests against
 # real databases run locally (ONYX_TEST_PG=1 ONYX_TEST_MYSQL=1 cargo test).
+#
+# Three independent jobs, so a failing test or build never skips the security audit.
 name: CI
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  check:
+  frontend:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
+      # The pnpm version comes from package.json's packageManager field.
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -21,23 +26,43 @@ jobs:
       - run: pnpm exec tsc --noEmit
       - run: pnpm test
       - run: pnpm build
-      - run: pnpm audit --prod
 
+  rust:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # Tauri's build script expects the frontend's output folder to exist.
+      - run: mkdir -p dist
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Unit tests
         working-directory: src-tauri
         run: cargo test --locked
-      - name: Audit and licences
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm advisories
+        run: pnpm audit --prod
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: RustSec advisories
         working-directory: src-tauri
-        run: |
-          cargo install cargo-audit cargo-deny --locked
-          cargo audit
-          cargo deny check
+        run: cargo audit
+      - name: Advisories, licences, bans and sources
+        working-directory: src-tauri
+        run: cargo deny check

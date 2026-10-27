@@ -5,7 +5,7 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::appdb::{now_ms, HistoryEntry, SavedQuery};
-use crate::connections::{ConnectionConfig, Environment};
+use crate::connections::{ConnectionConfig, Engine, Environment};
 use crate::error::{AppError, Result};
 use crate::db::edit::RowEdit;
 use crate::db::model::{ColumnInfo, CompletionTable, ConnectInfo, DbObject, ForeignKeyRef, TableSnapshot, TableStructure};
@@ -75,12 +75,19 @@ pub fn list_connections(state: State<'_, AppState>) -> Vec<ConnectionConfig> {
 #[tauri::command]
 pub async fn save_connection(
     state: State<'_, AppState>,
-    config: ConnectionConfig,
+    mut config: ConnectionConfig,
     password: Option<String>,
     ssh_secret: Option<String>,
 ) -> Result<()> {
     config.validate()?;
-    let password = password.map(zeroize::Zeroizing::new);
+    // A password typed into a MongoDB address goes to the vault, never connections.json.
+    let from_url = config.take_url_credentials();
+    let password = match (password, from_url) {
+        (Some(typed), _) if !typed.is_empty() => Some(typed),
+        (_, Some(in_url)) => Some(in_url),
+        (typed, None) => typed,
+    }
+    .map(zeroize::Zeroizing::new);
     let ssh_secret = ssh_secret.map(zeroize::Zeroizing::new);
     state.update_secret(&secrets::password_account(&config.id), password.as_deref().map(String::as_str))?;
     state.update_secret(&secrets::ssh_account(&config.id), ssh_secret.as_deref().map(String::as_str))?;
@@ -217,6 +224,9 @@ pub async fn run_query(
     on_event: Channel<InvokeResponseBody>,
 ) -> Result<()> {
     let config = state.config(&id)?;
+    if config.read_only && matches!(config.engine, Engine::Postgres | Engine::Mysql | Engine::Sqlserver) {
+        crate::readonly::check(&sql, config.engine)?;
+    }
     let session = state.session(&id).await?;
     if config.environment == Environment::Prod && !confirmed {
         let mut risks = guard::risky_statements(&sql, config.engine);
@@ -345,6 +355,9 @@ pub async fn apply_edits(
     edits: Vec<RowEdit>,
     confirmed: bool,
 ) -> Result<crate::safe_edit::ApplyReport> {
+    if state.config(&id)?.read_only {
+        return Err(AppError::Invalid("This connection is read-only".into()));
+    }
     let session = state.session(&id).await?;
     let statements = session.prepare_edits(&schema, &table, &edits).await?;
     if state.config(&id)?.environment == Environment::Prod && !confirmed {
@@ -686,6 +699,11 @@ pub async fn schema_snapshot(state: State<'_, AppState>, id: Uuid, schema: Strin
 #[tauri::command]
 pub async fn admin_query(state: State<'_, AppState>, id: Uuid, sql: String, confirmed: bool) -> Result<serde_json::Value> {
     let config = state.config(&id)?;
+    let lower_trim = sql.trim().to_ascii_lowercase();
+    let kill = lower_trim.starts_with("kill ") && lower_trim.split_whitespace().skip(1).all(|w| w == "query" || w.chars().all(|c| c.is_ascii_digit()));
+    if config.read_only && matches!(config.engine, Engine::Postgres | Engine::Mysql | Engine::Sqlserver) && !kill {
+        crate::readonly::check(&sql, config.engine)?;
+    }
     let lower = sql.to_ascii_lowercase();
     let kills = lower.contains("pg_cancel_backend") || lower.contains("pg_terminate_backend") || lower.trim_start().starts_with("kill");
     if kills && config.environment == Environment::Prod && !confirmed {
@@ -897,7 +915,8 @@ pub async fn restore_database(
 ) -> Result<()> {
     check_writable(&state, &id, confirmed, &format!("Restore {path}"))?;
     let (config, at, password, _tunnel) = tool_endpoint(&state, &id).await?;
-    crate::dump::restore(&config, at, password, schema, std::path::Path::new(&path), &on_progress).await
+    let session = state.session(&id).await?;
+    crate::dump::restore(&config, &session, at, password, schema, std::path::Path::new(&path), &on_progress).await
 }
 
 // ---- Natural language to SQL ----
@@ -912,12 +931,24 @@ pub async fn set_api_key(state: State<'_, AppState>, key: String) -> Result<()> 
     state.update_secret(crate::ai::API_KEY_ACCOUNT, Some(trimmed))
 }
 
+/// The UI's saved state that holds SQL or results (tabs, alerts, tool setups), in the vault.
+#[tauri::command]
+pub fn ui_state_get(state: State<'_, AppState>, key: String) -> Result<Option<String>> {
+    state.vault()?.ui_state(&key)
+}
+
+#[tauri::command]
+pub fn ui_state_set(state: State<'_, AppState>, key: String, value: Option<String>) -> Result<()> {
+    state.vault()?.set_ui_state(&key, value.as_deref())
+}
+
 #[tauri::command]
 pub async fn has_api_key(state: State<'_, AppState>) -> Result<bool> {
     Ok(state.secret(crate::ai::API_KEY_ACCOUNT)?.is_some())
 }
 
-/// Writes SQL for a request in plain words. Sends only the schema, never rows; needs the
+/// Writes SQL for a request in plain words. Sends the request, the schema and any SQL the UI
+/// passes to refine (never rows); needs the
 /// connection's opt-in and is refused on prod.
 #[tauri::command]
 pub async fn ai_sql(

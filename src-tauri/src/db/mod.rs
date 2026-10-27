@@ -109,6 +109,26 @@ impl Session {
         self.run_limited(sql, events, None, None).await
     }
 
+    /// Runs a query that must only read (exports, copies): inside a READ ONLY transaction on a
+    /// session of its own, rolled back afterwards, so even a function that writes can't
+    /// (Postgres, MySQL). Other engines run it as `run` does, after the caller's checks.
+    pub async fn run_read_only(&self, sql: &str, events: &Events) -> Result<RunSummary> {
+        let begin = match self {
+            Session::Postgres(_) => "BEGIN READ ONLY",
+            Session::Mysql(_) => "START TRANSACTION READ ONLY",
+            _ => return self.run(sql, events).await,
+        };
+        let tab = format!("__readonly_{}", uuid::Uuid::new_v4().simple());
+        let result = async {
+            self.execute_script(begin, &tab).await?;
+            self.run_limited(sql, events, None, Some(&tab)).await
+        }
+        .await;
+        let _ = self.execute_script("ROLLBACK", &tab).await;
+        self.close_tab(&tab).await;
+        result
+    }
+
     /// Like `run`, keeping at most `limit` rows of each result (the rest are counted).
     /// `tab`: a query tab's own connection (opened on first use) instead of the shared one.
     pub async fn run_limited(&self, sql: &str, events: &Events, limit: Option<u64>, tab: Option<&str>) -> Result<RunSummary> {

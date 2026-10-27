@@ -19,6 +19,7 @@ mod http;
 mod journal;
 mod menu;
 mod migrations;
+mod readonly;
 mod redact;
 mod safe_edit;
 mod secrets;
@@ -130,6 +131,8 @@ pub fn run() {
             commands::restore_database,
             commands::set_api_key,
             commands::has_api_key,
+            commands::ui_state_get,
+            commands::ui_state_set,
             commands::ai_sql,
             commands::query_timings,
             commands::slow_queries,

@@ -104,8 +104,9 @@ export function SettingsView() {
 
         <Section title="Natural-language SQL">
           <p className="px-4 py-2.5 text-[12px] text-muted">
-            Write SQL from a description (⇧⌘I) with Claude. Only schema names and types are sent, never rows, and only
-            for connections where you turned it on. Prod connections are always excluded.
+            Write SQL from a description (⇧⌘I) with Claude. What's sent: your request, the schema (table and column
+            names, types, foreign keys), Claude's previous answer in the chat, and the editor's SQL only when you tick
+            it for a chat. Never rows. Only for connections where you turned it on; prod connections are always excluded.
           </p>
           <Row label="Anthropic API key">
             {hasKey ? (

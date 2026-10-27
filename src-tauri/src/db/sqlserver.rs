@@ -192,8 +192,7 @@ impl SqlServerSession {
         let mut broken: Option<i16> = None;
         let outcome: Result<()> = async {
             if self.read_only {
-                crate::export::ensure_read_only(sql, Engine::Sqlserver)
-                    .map_err(|_| AppError::Invalid("This connection is read-only: only SELECT queries run".into()))?;
+                crate::readonly::check(sql, Engine::Sqlserver)?;
             }
             let editor = self.editor(tab).await?;
             let mut conn = editor.conn.lock().await;

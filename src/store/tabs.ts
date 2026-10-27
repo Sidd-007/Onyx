@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { vaultStorage } from "../lib/vaultStorage";
 
 /** Tool tabs; components/tools.tsx has each one's screen. */
 export type ToolKind = "er" | "diff" | "activity" | "datadiff" | "users" | "rediskey" | "monitor" | "changes" | "crossdb" | "notebook" | "related" | "tail" | "alerts" | "advisor" | "migrations" | "investigation" | "context" | "entitydiff" | "race" | "cache" | "observe" | "rls" | "fixtures" | "logic" | "perf" | "backfill" | "code" | "trace" | "tenant" | "shrink" | "vector";
@@ -51,7 +52,7 @@ interface TabsStore {
   closeTable(connectionId: string, schema: string, table: string): void;
 }
 
-/** Open tabs and their SQL survive restarts (localStorage). */
+/** Open tabs and their SQL survive restarts (in the encrypted vault). */
 export const useTabs = create<TabsStore>()(
   persist(
     (set, get) => ({
@@ -178,6 +179,7 @@ export const useTabs = create<TabsStore>()(
     }),
     {
       name: "onyx.tabs",
+      storage: vaultStorage,
       version: 2,
       // v1 tabs were all query tabs.
       migrate: (state) => {

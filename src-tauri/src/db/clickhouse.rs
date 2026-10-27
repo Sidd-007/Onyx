@@ -102,8 +102,9 @@ impl ClickSession {
         };
         let tls = match config.ssl_mode {
             SslMode::Disable => None,
-            // Through a tunnel the certificate can't match 127.0.0.1: encrypt without checking.
-            mode => Some(Arc::new(super::tls::client_config(if tunnel.is_some() { SslMode::Require } else { mode })?)),
+            // Through a tunnel the TCP connection goes to 127.0.0.1, but the certificate is still
+            // checked against the real host (`server_name` below), as the mode asks.
+            mode => Some(Arc::new(super::tls::client_config(mode)?)),
         };
         let endpoint = Endpoint { host, port, tls, server_name: config.host.trim().to_owned() };
         let user = if config.user.trim().is_empty() { "default".to_owned() } else { config.user.trim().to_owned() };

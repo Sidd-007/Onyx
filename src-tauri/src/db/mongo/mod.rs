@@ -226,7 +226,11 @@ impl MongoSession {
                     _ => return Err(error(format!("{method}() takes a command document"))),
                 };
                 let name = command.keys().next().cloned().unwrap_or_default();
-                if self.read_only && !READ_COMMANDS.contains(&name.as_str()) {
+                // An aggregate with $out or $merge writes, as a command too.
+                let writes_out = command.get_array("pipeline").is_ok_and(|stages| {
+                    stages.iter().any(|s| s.as_document().is_some_and(|d| d.contains_key("$out") || d.contains_key("$merge")))
+                });
+                if self.read_only && (!READ_COMMANDS.contains(&name.as_str()) || writes_out) {
                     return Err(error(format!("This connection is read-only ({name} isn't a read command)")));
                 }
                 let target = if method == "adminCommand" { self.client.database("admin") } else { db.clone() };

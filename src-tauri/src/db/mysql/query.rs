@@ -29,6 +29,10 @@ impl MySession {
             }
         };
         let mut conn = editor.conn.lock().await;
+        if self.read_only {
+            // Back to read-only before every run, whatever an earlier run changed.
+            let _ = conn.query_drop("SET SESSION TRANSACTION READ ONLY").await;
+        }
         let outcome: Result<()> = async {
             let mut result = conn.query_iter(sql).await?;
             while !result.is_empty() {

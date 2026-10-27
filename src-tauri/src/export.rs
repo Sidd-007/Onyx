@@ -9,8 +9,6 @@ use std::sync::{Arc, Mutex};
 use arrow_array::{Array, StringArray};
 use arrow_ipc::reader::StreamReader;
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::Statement;
-use sqlparser::parser::Parser;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 use crate::connections::Engine;
@@ -48,28 +46,30 @@ pub struct ExportResult {
 pub fn ensure_read_only(sql: &str, engine: Engine) -> Result<()> {
     match engine {
         Engine::Redis => {
-            let read = sql.lines().map(str::trim).filter(|l| !l.is_empty()).all(|l| {
-                let command = l.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
-                !crate::db::redis::WRITES.contains(&command.as_str())
-            });
-            return if read { Ok(()) } else { Err(AppError::Invalid("Export only runs commands that read".into())) };
+            for line in sql.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//")) {
+                let words = crate::db::redis::split_command(line.trim_end_matches(';'))?;
+                if !crate::db::redis::reads(&words) {
+                    return Err(AppError::Invalid("Export only runs Redis commands that read".into()));
+                }
+            }
+            Ok(())
         }
         Engine::Mongodb => {
-            let lower = sql.to_ascii_lowercase();
-            let read = [".find(", ".aggregate(", ".countdocuments(", ".distinct("].iter().any(|op| lower.contains(op))
-                && !lower.contains("$out")
-                && !lower.contains("$merge");
-            return if read { Ok(()) } else { Err(AppError::Invalid("Export only runs find, aggregate, countDocuments or distinct".into())) };
+            use crate::db::mongo::shell::Statement as Mongo;
+            let refuse = || AppError::Invalid("Export only runs one find, aggregate, countDocuments or distinct".into());
+            let statements = crate::db::mongo::shell::parse(sql).map_err(|_| refuse())?;
+            match statements.as_slice() {
+                [s @ Mongo::Collection { method, .. }]
+                    if ["find", "findOne", "aggregate", "countDocuments", "estimatedDocumentCount", "distinct"].contains(&method.as_str())
+                        && !crate::db::mongo::writes(s) =>
+                {
+                    Ok(())
+                }
+                _ => Err(refuse()),
+            }
         }
-        _ => {}
+        _ => crate::readonly::check_export(sql, engine),
     }
-    let dialect = crate::dialect::parser(engine);
-    let refuse = || AppError::Invalid("Export only runs SELECT queries".into());
-    let statements = Parser::parse_sql(dialect.as_ref(), sql).map_err(|_| refuse())?;
-    if statements.is_empty() || !statements.iter().all(|s| matches!(s, Statement::Query(_))) {
-        return Err(refuse());
-    }
-    Ok(())
 }
 
 /// Runs `sql` and writes its first result set to `path`. A failed run removes the file.
@@ -93,7 +93,7 @@ pub async fn export(
         sink.lock().unwrap().handle(body);
         Ok(())
     });
-    let summary = session.run(sql, &channel).await;
+    let summary = session.run_read_only(sql, &channel).await;
     let mut writer = writer.lock().unwrap();
     let outcome = summary.and_then(|s| match s.error.or(writer.error.take()) {
         Some(e) => Err(AppError::Invalid(e)),
@@ -409,6 +409,17 @@ mod tests {
         assert!(ensure_read_only("DELETE FROM users", Engine::Postgres).is_err());
         assert!(ensure_read_only("SELECT 1; DROP TABLE users", Engine::Mysql).is_err());
         assert!(ensure_read_only("not sql at all", Engine::Postgres).is_err());
+        assert!(ensure_read_only("WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d", Engine::Postgres).is_err());
+        assert!(ensure_read_only("SELECT * INTO copy FROM users", Engine::Postgres).is_err());
+        // MongoDB: one reading call, parsed (a `.find(` elsewhere in the text isn't enough).
+        assert!(ensure_read_only("db.users.find({ plan: \"pro\" })", Engine::Mongodb).is_ok());
+        assert!(ensure_read_only("db.users.find({}); db.users.deleteMany({})", Engine::Mongodb).is_err());
+        assert!(ensure_read_only("db.users.aggregate([{ $match: {} }, { $out: \"x\" }])", Engine::Mongodb).is_err());
+        // Redis: an allow-list of reads.
+        assert!(ensure_read_only("GET a\nHGETALL h\nSORT list", Engine::Redis).is_ok());
+        for bad in ["SORT list STORE dst", "BITFIELD k SET u8 0 1", "ACL SETUSER x on", "CONFIG SET maxmemory 1", "REPLICAOF host 1", "MODULE.CMD x"] {
+            assert!(ensure_read_only(bad, Engine::Redis).is_err(), "{bad}");
+        }
     }
 
     #[tokio::test]
