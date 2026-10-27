@@ -31,14 +31,29 @@ const BIG_TABLE: f64 = 200_000.0;
 
 /// Every row of a query's first result, on `tab`'s session (`limit`: rows kept).
 pub async fn collect(session: &Session, sql: &str, tab: Option<&str>, limit: Option<u64>) -> Result<(Vec<String>, Vec<Row>)> {
-    #[derive(Default)]
-    struct Out {
-        columns: Vec<String>,
-        rows: Vec<Row>,
-        error: Option<String>,
-        results: usize,
-    }
-    let out = Arc::new(Mutex::new(Out::default()));
+    let (channel, out) = collector();
+    session.run_limited(sql, &channel, limit, tab).await?;
+    take(&out)
+}
+
+/// Like `collect`, inside a READ ONLY transaction of its own (see `Session::run_read_only`).
+pub async fn collect_read_only(session: &Session, sql: &str, limit: Option<u64>) -> Result<(Vec<String>, Vec<Row>)> {
+    let (channel, out) = collector();
+    session.run_read_only(sql, &channel, limit).await?;
+    take(&out)
+}
+
+#[derive(Default)]
+struct Collected {
+    columns: Vec<String>,
+    rows: Vec<Row>,
+    error: Option<String>,
+    results: usize,
+}
+
+/// A channel that keeps the first result's columns and rows, and the error if there is one.
+fn collector() -> (Channel<InvokeResponseBody>, Arc<Mutex<Collected>>) {
+    let out = Arc::new(Mutex::new(Collected::default()));
     let sink = out.clone();
     let channel = Channel::new(move |body| {
         let mut o = sink.lock().unwrap();
@@ -71,7 +86,10 @@ pub async fn collect(session: &Session, sql: &str, tab: Option<&str>, limit: Opt
         }
         Ok(())
     });
-    session.run_limited(sql, &channel, limit, tab).await?;
+    (channel, out)
+}
+
+fn take(out: &Mutex<Collected>) -> Result<(Vec<String>, Vec<Row>)> {
     let mut o = out.lock().unwrap();
     match o.error.take() {
         Some(e) => Err(AppError::Invalid(e)),

@@ -713,6 +713,19 @@ pub async fn admin_query(state: State<'_, AppState>, id: Uuid, sql: String, conf
     Ok(serde_json::json!({ "columns": columns, "rows": rows }))
 }
 
+/// A query alert's check: one query that only reads (checked here, not in the UI), run in a
+/// READ ONLY transaction of its own, at most 1,000 rows. Alerts run unattended on a schedule,
+/// so they can never write, on any environment.
+#[tauri::command]
+pub async fn alert_query(state: State<'_, AppState>, id: Uuid, sql: String) -> Result<serde_json::Value> {
+    let config = state.config(&id)?;
+    let sql = sql.trim().trim_end_matches(';').trim().to_owned();
+    export::ensure_read_only(&sql, config.engine).map_err(|e| AppError::Invalid(format!("Alerts only run one query that reads: {}", e.to_string().trim_start_matches("Invalid: "))))?;
+    let session = state.session(&id).await?;
+    let (columns, rows) = crate::journal::collect_read_only(&session, &sql, Some(1000)).await?;
+    Ok(serde_json::json!({ "columns": columns, "rows": rows }))
+}
+
 // ---- Bulk data ----
 
 /// Writing many rows: refused on read-only connections; prod needs the user's confirmation.

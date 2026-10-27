@@ -71,7 +71,8 @@ export const useAlerts = create<AlertsStore>()(
         try {
           if (!isRead(alert.sql)) throw new Error("Alerts run a single SELECT only");
           if (!(await useConnections.getState().connect(alert.connectionId))) throw new Error("Couldn't connect");
-          const out = await api.adminQuery(alert.connectionId, alert.sql.trim().replace(/;\s*$/, ""));
+          // The backend checks it only reads and runs it in a read-only transaction.
+          const out = await api.alertQuery(alert.connectionId, alert.sql);
           const { firing, value } = evaluate(alert, out.rows);
           if (firing && !alert.firing) {
             const body = `${alert.name}: ${CONDITION_LABEL[alert.condition]}${alert.condition === "above" || alert.condition === "below" ? ` ${alert.threshold}` : ""} (${value ?? "NULL"})`;

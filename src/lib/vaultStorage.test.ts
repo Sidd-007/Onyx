@@ -15,7 +15,7 @@ vi.stubGlobal("localStorage", {
   removeItem: (k: string) => void store.delete(k),
 });
 
-const { vaultStorage, flushVaultStorage } = await import("./vaultStorage");
+const { vaultStorage, flushVaultStorage, moveLegacyCopies } = await import("./vaultStorage");
 
 describe("vault storage", () => {
   beforeEach(() => {
@@ -41,5 +41,35 @@ describe("vault storage", () => {
     await flushVaultStorage();
     expect(vault.get("onyx.alerts")).toContain("[2]");
     expect(store.size).toBe(0);
+  });
+
+  it("never saves over the vault after a failed read", async () => {
+    vault.set("onyx.rls-cases", JSON.stringify({ state: { cases: ["saved"] }, version: 0 }));
+    const { api } = await import("./ipc");
+    vi.mocked(api.uiStateGet).mockRejectedValueOnce(new Error("vault locked"));
+    expect(await vaultStorage!.getItem("onyx.rls-cases")).toBeNull();
+    // The store now holds its defaults; saving them must not reach the vault.
+    await vaultStorage!.setItem("onyx.rls-cases", { state: { cases: [] }, version: 0 });
+    await flushVaultStorage();
+    expect(vault.get("onyx.rls-cases")).toContain("saved");
+  });
+
+  it("moves every store's plain copy at startup, opened or not, without overwriting the vault", async () => {
+    store.set("onyx.tenant-recipes", "plain recipes");
+    store.set("onyx.tabs", "old tabs");
+    vault.set("onyx.tabs", "newer tabs");
+    store.set("unrelated", "keep");
+    await moveLegacyCopies();
+    expect(vault.get("onyx.tenant-recipes")).toBe("plain recipes");
+    expect(vault.get("onyx.tabs")).toBe("newer tabs");
+    expect([...store.keys()]).toEqual(["unrelated"]);
+  });
+
+  it("keeps the plain copy when the vault is locked", async () => {
+    store.set("onyx.alerts", "plain alerts");
+    const { api } = await import("./ipc");
+    vi.mocked(api.uiStateGet).mockRejectedValueOnce(new Error("vault locked"));
+    await moveLegacyCopies(["onyx.alerts"]);
+    expect(store.get("onyx.alerts")).toBe("plain alerts");
   });
 });

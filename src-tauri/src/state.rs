@@ -39,7 +39,13 @@ impl AppState {
         let key = secrets::app_db_key().map_err(|e| AppError::Locked(e.to_string()))?;
         let db = Arc::new(AppDb::open(&self.vault_path, &key)?);
         *vault = Some(db.clone());
+        drop(vault);
+        self.move_url_credentials(&db)?;
         Ok(db)
+    }
+
+    fn move_url_credentials(&self, vault: &AppDb) -> Result<()> {
+        move_url_credentials(&mut self.store.lock().unwrap(), vault)
     }
 
     /// A connection secret from the vault. One that an older version kept in the
@@ -76,5 +82,57 @@ impl AppState {
 
     pub async fn session(&self, id: &Uuid) -> Result<Arc<Session>> {
         self.sessions.read().await.get(id).cloned().ok_or(AppError::NotConnected)
+    }
+}
+
+/// Connections saved before passwords were kept out of MongoDB addresses: each password moves
+/// into the vault (unless one is already there) and the address is saved without it.
+fn move_url_credentials(store: &mut crate::connections::ConnectionStore, vault: &AppDb) -> Result<()> {
+    let found: Vec<_> = store
+        .list()
+        .iter()
+        .filter_map(|c| {
+            let mut clean = c.clone();
+            let password = clean.take_url_credentials();
+            (clean.host != c.host).then_some((clean, password))
+        })
+        .collect();
+    for (clean, password) in found {
+        let account = secrets::password_account(&clean.id);
+        if let Some(p) = password.filter(|p| !p.is_empty())
+            && vault.secret(&account)?.is_none()
+        {
+            vault.set_secret(&account, &p)?;
+        }
+        store.upsert(clean)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connections::{ConnectionConfig, ConnectionStore, Engine};
+
+    #[test]
+    fn old_mongodb_addresses_lose_their_passwords_to_the_vault() {
+        let path = std::env::temp_dir().join(format!("onyx-conns-{}.json", uuid::Uuid::new_v4().simple()));
+        let mut config = crate::bulk_test_config(std::path::Path::new("x"));
+        config.engine = Engine::Mongodb;
+        config.host = "mongodb://ann:hunter2@db.example.com:27017/shop".into();
+        config.user = String::new();
+        let id = config.id;
+        std::fs::write(&path, serde_json::to_vec(&vec![config]).unwrap()).unwrap();
+
+        let mut store = ConnectionStore::load(path.clone()).unwrap();
+        let vault = AppDb::in_memory();
+        move_url_credentials(&mut store, &vault).unwrap();
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains("hunter2"), "{on_disk}");
+        let saved: Vec<ConnectionConfig> = serde_json::from_str(&on_disk).unwrap();
+        assert_eq!((saved[0].host.as_str(), saved[0].user.as_str()), ("mongodb://db.example.com:27017/shop", "ann"));
+        assert_eq!(vault.secret(&secrets::password_account(&id)).unwrap().as_deref().map(String::as_str), Some("hunter2"));
+        std::fs::remove_file(&path).unwrap();
     }
 }

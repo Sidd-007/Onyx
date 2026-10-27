@@ -507,6 +507,8 @@ export const api = {
   /** Activity queries and session kills, on the connection's second session. */
   adminQuery: (id: string, sql: string, confirmed = false) =>
     invoke<{ columns: string[]; rows: (string | null)[][] }>("admin_query", { id, sql, confirmed }),
+  /** A query alert's check: one read-only query, refused if it could write. */
+  alertQuery: (id: string, sql: string) => invoke<{ columns: string[]; rows: (string | null)[][] }>("alert_query", { id, sql }),
 
   // IDE mode: a folder of SQL files. Paths are relative to the folder.
   workspaceList: () => invoke<WorkspaceListing | null>("workspace_list"),

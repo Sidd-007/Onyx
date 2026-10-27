@@ -93,7 +93,7 @@ pub async fn export(
         sink.lock().unwrap().handle(body);
         Ok(())
     });
-    let summary = session.run_read_only(sql, &channel).await;
+    let summary = session.run_read_only(sql, &channel, None).await;
     let mut writer = writer.lock().unwrap();
     let outcome = summary.and_then(|s| match s.error.or(writer.error.take()) {
         Some(e) => Err(AppError::Invalid(e)),

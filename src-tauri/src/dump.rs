@@ -66,8 +66,14 @@ fn log(events: &Channel<InvokeResponseBody>, event: serde_json::Value) {
 
 /// Connection settings for a Postgres tool, as environment variables.
 fn pg_env(cmd: &mut Command, config: &ConnectionConfig, at: &Endpoint, password: Option<&str>) -> Result<Option<PrivateFile>> {
-    cmd.env("PGHOST", &at.host)
-        .env("PGPORT", at.port.to_string())
+    if at.tunnelled {
+        // Connect to the tunnel's address, but check the certificate against the real host:
+        // libpq verifies PGHOST's name while connecting to PGHOSTADDR.
+        cmd.env("PGHOST", config.host.trim()).env("PGHOSTADDR", &at.host);
+    } else {
+        cmd.env("PGHOST", &at.host);
+    }
+    cmd.env("PGPORT", at.port.to_string())
         .env("PGUSER", &config.user)
         .env("PGDATABASE", &config.database)
         .env("PGAPPNAME", "Onyx")
@@ -80,8 +86,6 @@ fn pg_env(cmd: &mut Command, config: &ConnectionConfig, at: &Endpoint, password:
         SslMode::Disable => "disable",
         SslMode::Prefer => "prefer",
         SslMode::Require => "require",
-        // Through a tunnel the certificate's name can't match 127.0.0.1.
-        SslMode::VerifyFull if at.tunnelled => "require",
         SslMode::VerifyFull => {
             let file = PrivateFile::new(crate::db::tls_bundle(), ".pem")?;
             cmd.env("PGSSLROOTCERT", &file.0);
@@ -105,7 +109,13 @@ fn mysql_options(config: &ConnectionConfig, at: &Endpoint, password: Option<&str
         SslMode::Disable => "DISABLED",
         SslMode::Prefer => "PREFERRED",
         SslMode::Require => "REQUIRED",
-        SslMode::VerifyFull if at.tunnelled => "REQUIRED",
+        // The mysql tools check the certificate against the address they connect to, 127.0.0.1
+        // through a tunnel; rather than silently skip the check, verify-full refuses.
+        SslMode::VerifyFull if at.tunnelled => {
+            return Err(AppError::Invalid(
+                "Verify-full can't check MySQL's certificate through an SSH tunnel with mysqldump. Choose “Require” for this dump, or connect without the tunnel.".into(),
+            ))
+        }
         SslMode::VerifyFull => {
             let file = PrivateFile::new(crate::db::tls_bundle(), ".pem")?;
             text += &format!("ssl-ca=\"{}\"\n", file.0.display());
@@ -354,5 +364,23 @@ mod tests {
         assert_eq!(rows[0][0].as_deref(), Some("1"));
         session.execute_meta(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
         std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn tunnelled_tools_still_verify_certificates() {
+        let mut config = crate::bulk_test_config(Path::new("x"));
+        config.engine = Engine::Postgres;
+        config.host = "db.example.com".into();
+        config.ssl_mode = SslMode::VerifyFull;
+        let at = Endpoint { host: "127.0.0.1".into(), port: 40001, tunnelled: true };
+        let mut cmd = Command::new("true");
+        let _ca = pg_env(&mut cmd, &config, &at, None).unwrap();
+        let env: std::collections::HashMap<_, _> =
+            cmd.as_std().get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
+        assert_eq!(env["PGSSLMODE"].as_deref(), Some("verify-full"));
+        assert_eq!(env["PGHOST"].as_deref(), Some("db.example.com"));
+        assert_eq!(env["PGHOSTADDR"].as_deref(), Some("127.0.0.1"));
+        config.engine = Engine::Mysql;
+        assert!(mysql_options(&config, &at, None).is_err(), "mysqldump must not skip the check silently");
     }
 }

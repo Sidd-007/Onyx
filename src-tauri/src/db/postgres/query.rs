@@ -290,8 +290,14 @@ mod tests {
 
         // An export (or copy) of a SELECT that calls a writing function writes nothing.
         let (channel, log) = recorder();
-        rw.run_read_only(&format!("SELECT {schema}.w()"), &channel).await.unwrap();
+        rw.run_read_only(&format!("SELECT {schema}.w()"), &channel, None).await.unwrap();
         assert!(event_types(&log.lock().unwrap()).contains(&"error".to_owned()));
+        assert_eq!(count().await.as_deref(), Some("0"));
+
+        // Alerts collect the same way: a read returns its rows, a writing call fails, nothing written.
+        let (_, rows) = crate::journal::collect_read_only(&rw, "SELECT 41 + 1", Some(10)).await.unwrap();
+        assert_eq!(rows[0][0].as_deref(), Some("42"));
+        assert!(crate::journal::collect_read_only(&rw, &format!("SELECT {schema}.w()"), Some(10)).await.is_err());
         assert_eq!(count().await.as_deref(), Some("0"));
         rw.execute_meta(&format!("DROP SCHEMA {schema} CASCADE")).await.unwrap();
     }

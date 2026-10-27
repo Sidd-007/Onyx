@@ -131,6 +131,7 @@ pub fn run() {
             commands::restore_database,
             commands::set_api_key,
             commands::has_api_key,
+            commands::alert_query,
             commands::ui_state_get,
             commands::ui_state_set,
             commands::ai_sql,
