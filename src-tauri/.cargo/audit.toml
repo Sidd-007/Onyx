@@ -1,0 +1,8 @@
+# Advisories reviewed and accepted. Re-check when a fix is released.
+[advisories]
+ignore = [
+  # rsa "Marvin" timing side channel on private-key operations. Pulled in by russh (RSA SSH
+  # keys) and mysql_async (RSA password exchange, public-key only). No fixed version exists;
+  # an attacker would need to time many signatures made with your own key. Prefer ed25519 keys.
+  "RUSTSEC-2023-0071",
+]

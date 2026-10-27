@@ -1,0 +1,43 @@
+# Checks every push: types, tests, lint and dependency audits. Integration tests against
+# real databases run locally (ONYX_TEST_PG=1 ONYX_TEST_MYSQL=1 cargo test).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm audit --prod
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --locked
+      - name: Audit and licences
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit cargo-deny --locked
+          cargo audit
+          cargo deny check

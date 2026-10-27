@@ -1,0 +1,64 @@
+[package]
+name = "onyx"
+version = "0.1.0"
+description = "A fast, secure database client for macOS"
+authors = ["Siddhant"]
+edition = "2024"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "onyx_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
+tokio-postgres = { version = "0.7.18", features = ["with-uuid-1", "with-serde_json-1"] }
+uuid = { version = "1.28.0", features = ["v4", "serde"] }
+arrow-array = "60.0.0"
+arrow-schema = "60.0.0"
+arrow-ipc = "60.0.0"
+thiserror = "2.0.21"
+futures-util = "0.3.34"
+tokio-postgres-rustls = "0.14.0"
+rustls-platform-verifier = "0.7.1"
+security-framework = "3.7.0"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+zeroize = "1.9.1"
+mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls-ring"] }
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher"] }
+sqlparser = "0.63.0"
+russh = { version = "0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+hex = "0.4.3"
+rand = "0.10.3"
+tauri-plugin-dialog = "2.8.3"
+rust_xlsxwriter = { version = "0.101.0", features = ["constant_memory"] }
+csv = "1.4.0"
+base64 = "0.23.1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+redis = { version = "1.8.0", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-insecure", "aio"] }
+mongodb = { version = "3.9.1", default-features = false, features = ["compat-3-3-0", "bson-3", "rustls-tls", "dns-resolver"] }
+bson = { version = "3", features = ["serde_json-1"] }
+tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls", "time", "tokio-util"] }
+tokio-util = { version = "0.7.20", features = ["compat"] }
+bytes = "1.12.1"
+ring = "0.17"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Onyx app icon: a cut stone in ink and chalk on a near-black squircle (macOS icon grid: 824 px tile, 100 px margin). -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#0b0b0c"/>
+  <rect x="102" y="102" width="820" height="820" rx="184" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="4"/>
+  <g transform="translate(512 512) scale(1.12) translate(-512 -512)" stroke="#0b0b0c" stroke-width="11" stroke-linejoin="round">
+    <!-- Crown -->
+    <polygon points="300,452 392,342 452,452" fill="#d6d5d0"/>
+    <polygon points="392,342 632,342 572,452 452,452" fill="#fafafa"/>
+    <polygon points="632,342 724,452 572,452" fill="#bdbcb6"/>
+    <!-- Pavilion -->
+    <polygon points="300,452 452,452 512,682" fill="#a8a8a3"/>
+    <polygon points="452,452 572,452 512,682" fill="#e9e8e4"/>
+    <polygon points="572,452 724,452 512,682" fill="#6f6f6b"/>
+  </g>
+</svg>
